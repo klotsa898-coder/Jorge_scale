@@ -73,5 +73,101 @@
         };
 
         google.charts.load('current', {'packages':['corechart']});
-        google.charts.setOnLoad
-          
+        google.charts.setOnLoadCallback(() => { loadData(); updateHistory(); });
+
+        async function updateHistory() {
+            try {
+                const res = await fetch(`https://api.thingspeak.com/channels/${channelID}/fields/1.json?api_key=${readAPIKey}&results=800`);
+                const data = await res.json();
+                const feeds = data.feeds;
+                if(!feeds.length) return;
+
+                const getWeightAt21 = (date) => {
+                    const target = new Date(date);
+                    target.setHours(21, 0, 0);
+                    const closest = feeds.reduce((prev, curr) => 
+                        Math.abs(new Date(curr.created_at) - target) < Math.abs(new Date(prev.created_at) - target) ? curr : prev
+                    );
+                    return parseFloat(closest.field1);
+                };
+
+                // Ενημέρωση Κεντρικού Banner
+                const diffMain = (getWeightAt21(new Date()) - getWeightAt21(new Date().setDate(new Date().getDate()-1))).toFixed(0);
+                const mainEl = document.getElementById('24hYieldMain');
+                mainEl.innerText = `${diffMain > 0 ? '+' : ''}${diffMain} gr`;
+                mainEl.style.color = diffMain >= 0 ? '#4caf50' : '#ff5252';
+
+                // Ενημέρωση 7 ημερών
+                const historyLog = document.getElementById('historyLog');
+                historyLog.innerHTML = '';
+                for (let i = 0; i < 7; i++) {
+                    const d0 = new Date(); d0.setDate(d0.getDate() - i);
+                    const d1 = new Date(); d1.setDate(d1.getDate() - (i + 1));
+                    const diff = (getWeightAt21(d0) - getWeightAt21(d1)).toFixed(0);
+                    
+                    const dayDiv = document.createElement('div');
+                    dayDiv.className = 'history-day';
+                    dayDiv.innerHTML = `
+                        <div class="hist-date">${d0.toLocaleDateString('el-GR', {weekday:'short', day:'numeric'})}</div>
+                        <div class="hist-val" style="color:${diff >= 0 ? '#4caf50' : '#ff5252'}">${diff > 0 ? '+' : ''}${diff}g</div>
+                    `;
+                    historyLog.appendChild(dayDiv);
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        function loadData() {
+            const num = document.getElementById('resultsRange').value;
+            fetch(`https://api.thingspeak.com/channels/${channelID}/feeds.json?api_key=${readAPIKey}&results=${num}`)
+            .then(res => res.json()).then(data => {
+                const lastFeed = data.feeds[data.feeds.length - 1];
+                const lastDate = new Date(lastFeed.created_at);
+                document.getElementById('mainUpdate').innerText = `🕒 Τελευταία μέτρηση: ${lastDate.toLocaleDateString('el-GR')} | ${lastDate.toLocaleTimeString('el-GR', {hour:'2-digit', minute:'2-digit'})}`;
+
+                const dashboard = document.getElementById('dashboard');
+                dashboard.innerHTML = '';
+                
+                Object.keys(fieldConfig).forEach(key => {
+                    const conf = fieldConfig[key];
+                    const vals = data.feeds.map(f => parseFloat(f[key])).filter(v => !isNaN(v));
+                    if(vals.length === 0) return;
+
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.innerHTML = `
+                        <div class="header-flex"><h3>${conf.label}</h3><span>${conf.icon}</span></div>
+                        <div class="value-display" style="color:${conf.color}">
+                            ${vals[vals.length-1].toFixed(conf.decimals)}<span style="font-size:0.4em; color:#666; margin-left:5px;">${conf.unit || ''}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span>MIN: ${Math.min(...vals).toFixed(conf.decimals)}</span>
+                            <span>MAX: ${Math.max(...vals).toFixed(conf.decimals)}</span>
+                        </div>
+                        <div id="chart_${key}" class="chart-box"></div>
+                    `;
+                    dashboard.appendChild(card);
+                    drawChart(data.feeds, key, conf.label, conf.color);
+                });
+            });
+        }
+
+        function drawChart(feeds, key, label, color) {
+            const dataTable = new google.visualization.DataTable();
+            dataTable.addColumn('string', 'Time');
+            dataTable.addColumn('number', label);
+            feeds.forEach(f => {
+                let v = parseFloat(f[key]);
+                if (!isNaN(v)) dataTable.addRow([new Date(f.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), v]);
+            });
+            new google.visualization.LineChart(document.getElementById('chart_'+key)).draw(dataTable, {
+                backgroundColor: 'transparent', curveType: 'function', legend: 'none',
+                pointSize: 5, 
+                hAxis: { textPosition: 'none' }, vAxis: { gridlines: {color:'#2a2a2a'}, textStyle: {color:'#555'} },
+                colors: [color], chartArea: {width:'95%', height:'80%'}
+            });
+        }
+        setInterval(() => { loadData(); updateHistory(); }, 60000);
+    </script>
+</body>
+    </html>
+    
